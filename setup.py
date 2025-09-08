@@ -129,7 +129,7 @@ README = open(os.path.join(os.path.dirname(__file__), 'README.rst'), encoding="u
 CHANGELOG = open(os.path.join(os.path.dirname(__file__), 'CHANGELOG.rst'), encoding="utf8").read()
 
 setup(
-    name='zeitlabs_payfort',
+    name='zeitlabs-payfort',
     version=VERSION,
     description="""Payfort Processor for Zeitlabs Payments Plugin""",
     long_description=README + '\n\n' + CHANGELOG,
@@ -143,7 +143,7 @@ setup(
 
     include_package_data=True,
     install_requires=load_requirements('requirements/base.in'),
-    python_requires=">=3.12",
+    python_requires=">=3.11",
     license="Apache Software License 2.0",
     zip_safe=False,
     keywords='Python edx',
@@ -156,6 +156,14 @@ setup(
         'License :: OSI Approved :: Apache Software License',
         'Natural Language :: English',
         'Programming Language :: Python :: 3',
-        'Programming Language :: Python :: 3.12',
+        'Programming Language :: Python :: 3.11',
     ],
+    entry_points={
+        'lms.djangoapp': [
+            'payfort = payfort.apps:PayfortConfig',
+        ],
+        'zeitlabs_payments.v1': [
+            'payfort = payfort.processor:PayFort',
+        ]
+    },
 )

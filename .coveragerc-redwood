@@ -1,0 +1,9 @@
+[run]
+branch = True
+data_file = .coverage
+source=payfort
+omit =
+    test_settings_redwood.py
+    */migrations/*
+    */static/*
+    */common_production.py

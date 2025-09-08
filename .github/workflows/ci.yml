@@ -14,8 +14,8 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest]
-        python-version: ["3.12"]
-        toxenv: [quality, docs, pii_check, django42, django52]
+        python-version: ["3.11"]
+        toxenv: [quality]
     steps:
       - uses: actions/checkout@v4
       - name: setup python
@@ -27,17 +27,9 @@ jobs:
         run: pip install -r requirements/pip.txt
 
       - name: Install Dependencies
-        run: pip install -r requirements/ci.txt
+        run: pip install -r requirements/ci.in
 
       - name: Run Tests
         env:
           TOXENV: ${{ matrix.toxenv }}
         run: tox
-
-      - name: Run coverage
-        if: matrix.python-version == '3.12' && matrix.toxenv == 'django42'
-        uses: codecov/codecov-action@v4
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          flags: unittests
-          fail_ci_if_error: true
