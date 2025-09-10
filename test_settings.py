@@ -31,6 +31,7 @@ INSTALLED_APPS = (
     'django.contrib.auth',
     'django.contrib.contenttypes',
     'django.contrib.messages',
+    'django.contrib.sites',
     'django.contrib.sessions',
     'payfort',
 )
@@ -44,18 +45,34 @@ ROOT_URLCONF = 'payfort.urls'
 SECRET_KEY = 'insecure-secret-key'
 
 MIDDLEWARE = (
+    'django.contrib.sessions.middleware.SessionMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
-    'django.contrib.sessions.middleware.SessionMiddleware',
 )
 
 TEMPLATES = [{
     'BACKEND': 'django.template.backends.django.DjangoTemplates',
-    'APP_DIRS': False,
+    'DIRS': ['tests/templates'],
+    'APP_DIRS': True,
     'OPTIONS': {
         'context_processors': [
             'django.contrib.auth.context_processors.auth',  # this is required for admin
             'django.contrib.messages.context_processors.messages',  # this is required for admin
+            'django.template.context_processors.request'
         ],
     },
 }]
+
+# Avoid warnings about migrations
+DEFAULT_AUTO_FIELD = 'django.db.models.AutoField'
+
+PAYFORT_SETTINGS = {
+    'access_code': 'test-code',
+    'merchant_identifier': 'test-identifier',
+    'request_sha_phrase': 'test-request-phrase',
+    'response_sha_phrase': 'test-response-phrase',
+    'sha_method': 'SHA-256',
+    'redirect_url': 'https://sbcheckout.payfort.com/FortAPI/paymentPage'
+}
+
+SITE_ID = 1
