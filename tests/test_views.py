@@ -3,14 +3,13 @@ import hashlib
 from unittest.mock import patch
 
 import pytest
-from common.djangoapps.course_modes.models import CourseMode
-from common.djangoapps.student.models import CourseEnrollment
 from django.contrib.auth import get_user_model
 from django.contrib.sites.models import Site
 from django.test import Client, RequestFactory, TestCase
 from django.urls import reverse
 from rest_framework.test import APITestCase
-from zeitlabs_payments.models import AuditLog, Cart, CatalogueItem, Invoice, Transaction, WebhookEvent
+from zeitlabs_payments.exceptions import CartFulfillmentError, DuplicateTransactionError, GatewayError, InvalidCartError
+from zeitlabs_payments.models import AuditLog, Cart, CatalogueItem, Invoice, Transaction
 
 from payfort.views import PayFortBaseView, PayfortFeedbackView
 
@@ -18,43 +17,75 @@ User = get_user_model()
 
 
 @pytest.mark.django_db
-class TestPayFortBaseViewNoMocks:
-    """PayfortBaseView tests."""
+class TestPayFortBaseViewWithMocks:
+    """PayFortBaseView tests with mocked payment processor."""
 
     factory = RequestFactory()
     view = PayFortBaseView()
-    site = None
-    cart = None
+    site = cart = None
 
     def setup_method(self):
         """setup"""
-        self.site = Site.objects.create(name='TestSite', domain='testsite.com')
+        self.site = Site.objects.create(name='MockSite', domain='mocksite.com')
         self.cart = Cart.objects.create(
             user=User.objects.get(id=3),
             status=Cart.Status.PROCESSING
         )
 
-    def test_cart_and_site_return_real_objects(self):
-        merchant_ref = f'{self.site.id}-{self.cart.id}'
-        request = self.factory.post('/fake-url/', data={'merchant_reference': merchant_ref})
+    @patch("payfort.processor.PayFort.get_cart")
+    def test_cart_returns_mocked_cart(self, mock_get_cart):
+        """Return a mocked Cart object via get_cart()."""
+        mock_get_cart.return_value = self.cart
+        merchant_ref = f"{self.site.id}-{self.cart.id}"
+        request = self.factory.post("/fake-url/", data={"merchant_reference": merchant_ref})
         self.view.request = request
 
         cart = self.view.cart
-        site = self.view.site
+        assert cart == self.cart
+        mock_get_cart.assert_called_once_with(str(self.cart.id))
 
-        assert cart is not None
-        assert site is not None
-        assert cart.id == self.cart.id
-        assert site.id == self.site.id
-
-    def test_cart_returns_none_on_bad_reference(self):
-        request = self.factory.post('/fake-url/', data={'merchant_reference': 'bad-format'})
+    @patch("payfort.processor.PayFort.get_cart")
+    def test_cart_returns_none_on_invalidcart_error(self, mock_get_cart):
+        """Return None if get_cart() raises InvalidCartError."""
+        mock_get_cart.side_effect = InvalidCartError("Invalid cart")
+        merchant_ref = f"{self.site.id}-999"
+        request = self.factory.post("/fake-url/", data={"merchant_reference": merchant_ref})
         self.view.request = request
+
+        cart = self.view.cart
+        assert cart is None
+        mock_get_cart.assert_called_once()
+
+    @patch("payfort.processor.PayFort.get_site")
+    def test_site_returns_mocked_site(self, mock_get_site):
+        """Return a mocked Site object via get_site()."""
+        mock_get_site.return_value = self.site
+        merchant_ref = f"{self.site.id}-{self.cart.id}"
+        request = self.factory.post("/fake-url/", data={"merchant_reference": merchant_ref})
+        self.view.request = request
+
+        site = self.view.site
+        assert site == self.site
+        mock_get_site.assert_called_once_with(str(self.site.id))
+
+    @patch("payfort.processor.PayFort.get_site")
+    def test_site_returns_none_on_gateway_error(self, mock_get_site):
+        """Return None if get_site() raises GatewayError."""
+        mock_get_site.side_effect = GatewayError("Invalid site")
+        merchant_ref = f"999-{self.cart.id}"
+        request = self.factory.post("/fake-url/", data={"merchant_reference": merchant_ref})
+        self.view.request = request
+
+        site = self.view.site
+        assert site is None
+        mock_get_site.assert_called_once()
+
+    def test_cart_returns_none_if_request_missing(self):
+        self.view.request = None
         assert self.view.cart is None
 
-    def test_site_returns_none_on_bad_reference(self):
-        request = self.factory.post('/fake-url/', data={'merchant_reference': 'bad-format'})
-        self.view.request = request
+    def test_site_returns_none_if_request_missing(self):
+        self.view.request = None
         assert self.view.site is None
 
     def test_cart_returns_none_if_merchant_reference_missing(self):
@@ -65,14 +96,6 @@ class TestPayFortBaseViewNoMocks:
     def test_site_returns_none_if_merchant_reference_missing(self):
         request = self.factory.post('/fake-url/', data={})
         self.view.request = request
-        assert self.view.site is None
-
-    def test_cart_returns_none_if_request_missing(self):
-        self.view.request = None
-        assert self.view.cart is None
-
-    def test_site_returns_none_if_request_missing(self):
-        self.view.request = None
         assert self.view.site is None
 
 
@@ -88,8 +111,7 @@ class PayfortFeedbackTestView(TestCase):
         """
         self.user = User.objects.get(id=3)
         self.cart = Cart.objects.create(user=self.user, status=Cart.Status.PROCESSING)
-        self.course_mode = CourseMode.objects.get(sku='custom-sku-1')
-        self.course_item = CatalogueItem.objects.get(sku='custom-sku-1')
+        self.course_item = CatalogueItem.objects.create(sku='custom-sku-1', price='45', currency='USD')
         self.cart.items.create(
             catalogue_item=self.course_item,
             original_price=self.course_item.price,
@@ -120,18 +142,20 @@ class PayfortFeedbackTestView(TestCase):
             'merchant_reference': f'{self.site.id}-{self.cart.id}',
             'authorization_code': '742138',
             'customer_email': 'tehreemsadat19@gmail.com',
-            'currency': 'SAR',
+            'currency': 'USD',
             'acquirer_response_code': '00',
             'status': '14',
         }
         self.request_factory = RequestFactory()
 
-    def test_post_for_invalid_cart_in_merchant_ref(self) -> None:
+    @patch("payfort.processor.PayFort.get_cart")
+    def test_post_for_invalid_cart_in_merchant_ref(self, mock_get_cart) -> None:
         """
         Test that posting with an invalid cart ID in merchant_reference raises PayFortException.
 
         :return: None
         """
+        mock_get_cart.side_effect = InvalidCartError("Invalid cart")
         data = self.valid_response.copy()
         data.update({'merchant_reference': '1-10000'})
         request = self.request_factory.post(self.url, data)
@@ -139,12 +163,14 @@ class PayfortFeedbackTestView(TestCase):
         response = PayfortFeedbackView.as_view()(request)
         assert response.status_code == 400
 
-    def test_post_for_invalid_site_in_merchant_ref(self) -> None:
+    @patch("payfort.processor.PayFort.get_site")
+    def test_post_for_invalid_site_in_merchant_ref(self, mock_get_site) -> None:
         """
         Test that posting with an invalid site ID in merchant_reference raises PayFortException.
 
         :return: None
         """
+        mock_get_site.side_effect = GatewayError("Invalid site")
         data = self.valid_response.copy()
         data.update({'merchant_reference': f'10000-{self.cart.id}'})
         request = self.request_factory.post(self.url, data)
@@ -220,153 +246,84 @@ class PayfortFeedbackTestView(TestCase):
 
     @patch('payfort.views.logger.error')
     @patch('payfort.views.verify_signature')
-    def test_post_for_success_payment_enroll_error_no_course_mode(
-        self, mock_verify_signature, mock_logger  # pylint: disable=unused-argument
+    @patch("payfort.processor.PayFort.fulfill_cart")
+    def test_post_success_for_cart_fullfillment_error(
+        self, mock_fulfill_cart, mock_verify_signature, mock_logger  # pylint: disable=unused-argument
     ) -> None:
         """
-        Test successful payment but course mode missing, triggers error logging and error page.
+        Test successful payment but error on cart fullfillment, triggers error logging and error page.
 
         :param mock_logger: mocked logger.error function
         :param mock_render: mocked render function
         :return: None
         """
-        assert not Transaction.objects.filter(gateway='payfort', cart=self.cart).exists(), \
-            'Transaction should not exist before test'
-        assert self.cart.status == Cart.Status.PROCESSING, \
-            'Cart should be in PROCESSING state'
-
-        self.course_mode.delete()
+        mock_fulfill_cart.side_effect = CartFulfillmentError("Invalid cart")
         request = self.request_factory.post(self.url, self.valid_response)
         request.user = self.user
         response = PayfortFeedbackView.as_view()(request)
-
-        assert Transaction.objects.filter(gateway='payfort', cart=self.cart).exists(), \
-            'Transaction should exist after payment'
-        self.cart.refresh_from_db()
-        assert self.cart.status == Cart.Status.PAID, \
-            'Cart status should be PAID after successful payment'
-
         mock_logger.assert_called_with(
-            f'Failed to fulfill cart {self.cart.id} or to create invoice: CourseMode not found'
+            'Failed to fulfill cart 1 or to create invoice: Invalid cart'
         )
-        assert response.status_code == 200
-
-    @patch('payfort.views.verify_signature')
-    def test_post_success_for_rolled_back_of_tables_on_handle_payment_error(
-        self, mock_verify_signature  # pylint: disable=unused-argument
-    ) -> None:
-        """
-        Test successful payment but course mode missing, triggers error logging and error page.
-
-        :param mock_logger: mocked logger.error function
-        :param mock_render: mocked render function
-        :return: None
-        """
-        assert not Transaction.objects.filter(gateway='payfort', cart=self.cart).exists(), \
-            'Transaction should not exist before test'
-        assert not WebhookEvent.objects.filter(
-            gateway='payfort',
-            event_type='direct-feedback'
-        ).exists(), \
-            'WebhookEvent should not exist before test'
-        assert self.cart.status == Cart.Status.PROCESSING, \
-            'Cart should be in PROCESSING state'
-
-        request = self.request_factory.post(self.url, self.valid_response)
-        request.user = self.user
-
-        with patch(
-            'zeitlabs_payments.providers.base.WebhookEvent.objects.create',
-            side_effect=Exception('Unknown exception')
-        ):
-
-            response = PayfortFeedbackView.as_view()(request)
-
-            assert not Transaction.objects.filter(gateway='payfort', cart=self.cart).exists(), \
-                'Transaction should not exist after test'
-            assert not WebhookEvent.objects.filter(
-                gateway='payfort',
-                event_type='direct-feedback'
-            ).exists(), \
-                'WebhookEVent should not exist after test'
-            assert self.cart.status == Cart.Status.PROCESSING, \
-                'Cart should not be changed and should be in PROCESSING state'
-            assert response.status_code == 200
-
-    @patch('payfort.views.verify_signature')
-    def test_post_success_for_duplicate_transaction(
-        self, mock_verify_signature  # pylint: disable=unused-argument
-    ) -> None:
-        """
-        Test successful payment but transaction already there with transaction_id received in response.
-        """
-        Transaction.objects.create(
-            gateway='payfort',
-            cart=self.cart,
-            gateway_transaction_id=self.valid_response['fort_id'],
-            amount=100
-        )
-
-        assert not AuditLog.objects.filter(
-            action=AuditLog.AuditActions.DUPLICATE_TRANSACTION,
-            cart=self.cart,
-            gateway='payfort'
-        ).exists()
-        assert self.cart.status == Cart.Status.PROCESSING, \
-            'Cart should be in PROCESSING state'
-
-        request = self.request_factory.post(self.url, self.valid_response)
-        request.user = self.user
-        response = PayfortFeedbackView.as_view()(request)
-
-        assert AuditLog.objects.filter(
-            action=AuditLog.AuditActions.DUPLICATE_TRANSACTION,
-            cart=self.cart,
-            gateway='payfort'
-        ).exists()
-        assert self.cart.status == Cart.Status.PROCESSING, \
-            'Cart status should not be changed.'
         assert response.status_code == 200
 
     @patch('payfort.views.logger.error')
-    @patch('zeitlabs_payments.cart_handler.CourseEnrollment.enroll')
     @patch('payfort.views.verify_signature')
-    def test_post_for_success_payment_paid_course_with_unsuccessful_enrollment(
-        self, mock_verify_signature, mock_enroll, mock_logger  # pylint: disable=unused-argument
+    @patch("payfort.processor.PayFort.handle_payment")
+    def test_post_success_for_rolled_back_of_tables_on_handle_payment_error(
+        self, mock_handle_payment, mock_verify_signature, mock_logger  # pylint: disable=unused-argument
     ) -> None:
         """
-        Test payment success but enrollment fails, logs exception and shows error page.
+        Test pst request for handle payment generic exception.
 
-        :param mock_enroll: mocked CourseEnrollment.enroll method
-        :param mock_logger: mocked logger.exception function
+        :param mock_logger: mocked logger.error function
         :param mock_render: mocked render function
         :return: None
         """
-        mock_enroll.side_effect = Exception('Unexpected error during enrollment')
-        assert not Transaction.objects.filter(gateway='payfort', cart=self.cart).exists(), \
-            'Transaction should not exist before test'
-        assert self.cart.status == Cart.Status.PROCESSING, \
-            'Cart should be in PROCESSING state'
+        mock_handle_payment.side_effect = Exception("Unknown exception")
 
         request = self.request_factory.post(self.url, self.valid_response)
         request.user = self.user
+
         response = PayfortFeedbackView.as_view()(request)
-
-        assert Transaction.objects.filter(gateway='payfort', cart=self.cart).exists(), \
-            'Transaction should exist after payment'
-        self.cart.refresh_from_db()
-        assert self.cart.status == Cart.Status.PAID, \
-            'Cart status should be PAID after successful payment'
-
         mock_logger.assert_called_with(
-            f'Failed to fulfill cart {self.cart.id} or to create invoice: Unexpected error during enrollment'
+            'Payment transaction failed and rolled back for cart 1: Unknown exception'
         )
         assert response.status_code == 200
 
-    @pytest.mark.django_db
+    @patch('payfort.views.AuditLog.log')
     @patch('payfort.views.verify_signature')
+    @patch("payfort.processor.PayFort.handle_payment")
+    def test_post_success_for_duplicate_transaction(
+        self, mock_handle_payment, mock_verify_signature, mock_audit_log  # pylint: disable=unused-argument
+    ) -> None:
+        """
+        Test pst request for handle payment generic exception.
+
+        :param mock_logger: mocked logger.error function
+        :param mock_render: mocked render function
+        :return: None
+        """
+        mock_handle_payment.side_effect = DuplicateTransactionError('Transaction already exist.')
+        request = self.request_factory.post(self.url, self.valid_response)
+        request.user = self.user
+
+        response = PayfortFeedbackView.as_view()(request)
+        mock_audit_log.assert_called_with(
+            action=AuditLog.AuditActions.DUPLICATE_TRANSACTION,
+            cart=self.cart,
+            gateway='payfort',
+            context={
+                'transaction_id': self.valid_response['fort_id'],
+                'cart_status': self.cart.status
+            }
+        )
+        assert response.status_code == 200
+
+    @patch('payfort.views.verify_signature')
+    @patch("payfort.processor.PayFort.fulfill_cart")
+    @patch("payfort.processor.PayFort.handle_payment")
     def test_post_for_successful_payment(
-        self, mock_verify_signature  # pylint: disable=unused-argument
+        self, mock_handle_payment, mock_fulfill_cart, mock_verify_signature  # pylint: disable=unused-argument
     ) -> None:
         """
         Test the full successful payment flow and enrollment.
@@ -374,67 +331,21 @@ class PayfortFeedbackTestView(TestCase):
         :param mock_render: mocked render function
         :return: None
         """
-        assert not Transaction.objects.filter(gateway='payfort', cart=self.cart).exists(), \
-            'Transaction should not exist before test'
-        assert self.cart.status == Cart.Status.PROCESSING, \
-            'Cart should be in PROCESSING state'
-        assert not CourseEnrollment.objects.filter(
-            user=self.cart.user, course=self.course_mode.course
-        ).exists(), 'User should not be enrolled before test'
-
         request = self.request_factory.post(self.url, self.valid_response)
         request.user = self.user
         response = PayfortFeedbackView.as_view()(request)
-
-        assert Transaction.objects.filter(gateway='payfort', cart=self.cart).exists(), \
-            'Transaction should exist after payment'
-        self.cart.refresh_from_db()
-        assert self.cart.status == Cart.Status.PAID, \
-            'Cart status should be PAID after payment'
-        assert CourseEnrollment.objects.filter(
-            user=self.cart.user, course=self.course_mode.course
-        ).exists(), 'User should be enrolled after payment'
-
-        assert response.status_code == 200
-
-    @pytest.mark.django_db
-    @patch('payfort.views.verify_signature')
-    @patch('payfort.views.logger.error')
-    def test_post_for_success_payment_cart_with_unsupported_item(
-        self, mock_logger, mock_verify_signature  # pylint: disable=unused-argument
-    ) -> None:
-        """
-        Test successful payment but cart contains unsupported item, triggers error logging.
-
-        :param mock_logger: mocked logger.exception function
-        :param mock_render: mocked render function
-        :return: None
-        """
-        assert not Transaction.objects.filter(gateway='payfort', cart=self.cart).exists(), \
-            'Transaction should not exist before test'
-        assert self.cart.status == Cart.Status.PROCESSING, \
-            'Cart should be in PROCESSING state'
-        unsupported_item = CatalogueItem.objects.create(sku='abcd', type='unsupported', price=50)
-        self.cart.items.all().delete()
-        self.cart.items.create(
-            catalogue_item=unsupported_item,
-            original_price=unsupported_item.price,
-            final_price=unsupported_item.price,
+        mock_handle_payment.assert_called_with(
+            cart=self.cart,
+            user=request.user if request.user.is_authenticated else None,
+            transaction_status=self.valid_response['response_message'],
+            transaction_id=self.valid_response['fort_id'],
+            method=self.valid_response['payment_option'],
+            amount=self.valid_response['amount'],
+            currency=self.valid_response['currency'],
+            reason=self.valid_response['acquirer_response_message'],
+            response=self.valid_response
         )
-
-        request = self.request_factory.post(self.url, self.valid_response)
-        request.user = self.user
-        response = PayfortFeedbackView.as_view()(request)
-
-        assert Transaction.objects.filter(gateway='payfort', cart=self.cart).exists(), \
-            'Transaction should exist after payment'
-        self.cart.refresh_from_db()
-        assert self.cart.status == Cart.Status.PAID, \
-            'Cart status should be PAID after payment'
-
-        mock_logger.assert_called_with(
-            f'Failed to fulfill cart {self.cart.id} or to create invoice: Unsupported catalogue item type: unsupported'
-        )
+        mock_fulfill_cart.assert_called_with(self.cart)
         assert response.status_code == 200
 
 
@@ -447,8 +358,7 @@ class PayFortStatusViewTest(APITestCase):
         """Setup"""
         self.user = User.objects.get(id=3)
         self.cart = Cart.objects.create(user=self.user, status=Cart.Status.PROCESSING)
-        self.course_mode = CourseMode.objects.get(sku='custom-sku-1')
-        self.course_item = CatalogueItem.objects.get(sku='custom-sku-1')
+        self.course_item = CatalogueItem.objects.create(sku='custom-sku-1', price='45', currency='USD')
         self.cart.items.create(
             catalogue_item=self.course_item,
             original_price=self.course_item.price,
@@ -466,8 +376,10 @@ class PayFortStatusViewTest(APITestCase):
         response = self.client.get(self.url, data={})
         self.assertEqual(response.status_code, 400)
 
-    def test_get_failed_for_invalid_merchant_ref(self):
+    @patch("payfort.processor.PayFort.get_cart")
+    def test_get_failed_for_invalid_merchant_ref(self, mock_get_cart):
         """Cart could not be found"""
+        mock_get_cart.side_effect = InvalidCartError("Invalid cart")
         self.login_user(self.user)
         response = self.client.get(self.url, data={
             'merchant_reference': '1111-2222',
@@ -490,12 +402,14 @@ class PayFortStatusViewTest(APITestCase):
         assert response.status_code == 400
         assert response.json()['error'] == 'Transaction Id is required to verify payment status.'
 
-    def test_paid_cart_with_invoice(self):
+    @patch("payfort.views.reverse")
+    def test_paid_cart_with_invoice(self, mock_reverse):
         """Cart is PAID and invoice exists"""
         self.login_user(self.user)
         self.cart.status = Cart.Status.PAID
         self.cart.save()
 
+        mock_reverse.return_value = '/fake/invoice_url/'
         transaction = Transaction.objects.create(
             gateway_transaction_id='tx123',
             gateway='payfort',
@@ -518,10 +432,7 @@ class PayFortStatusViewTest(APITestCase):
         assert response.status_code == 200
         data = response.json()
         assert data['invoice'] == 'DEV-100'
-        assert data['invoice_url'] == reverse(
-            'zeitlabs_payments:invoice',
-            args=['DEV-100']
-        )
+        assert data['invoice_url']
 
     def test_paid_cart_without_invoice(self):
         """Cart is PAID but no invoice found"""
@@ -565,8 +476,7 @@ class PayFortReturnViewTest(TestCase):
         self.factory = RequestFactory()
         self.user = User.objects.get(id=3)
         self.cart = Cart.objects.create(user=self.user, status=Cart.Status.PROCESSING)
-        self.course_mode = CourseMode.objects.get(sku='custom-sku-1')
-        self.course_item = CatalogueItem.objects.get(sku='custom-sku-1')
+        self.course_item = CatalogueItem.objects.create(sku='custom-sku-1', price='45', currency='USD')
         self.cart.items.create(
             catalogue_item=self.course_item,
             original_price=self.course_item.price,
@@ -575,56 +485,37 @@ class PayFortReturnViewTest(TestCase):
         self.site = Site.objects.create(name='test.com', domain='test.com')
         self.client = Client()
 
-    def test_missing_signature(self):
+    @patch("payfort.views.AuditLog.log")
+    def test_missing_signature(self, mock_audit_log):
         data = {
             'other': '1234',
             'merchant_reference': f'{self.site.id}-{self.cart.id}',
         }
-
-        assert not AuditLog.objects.filter(
-            action=AuditLog.AuditActions.BAD_RESPONSE_SIGNATURE,
-            cart=self.cart,
-            gateway='payfort',
-        ).exists()
-
         response = self.client.post(reverse('payfort:return'), data)
-
         assert response.status_code == 200
-        assert AuditLog.objects.filter(
+        mock_audit_log.assert_called_with(
             action=AuditLog.AuditActions.BAD_RESPONSE_SIGNATURE,
             cart=self.cart,
             gateway='payfort',
-            details=(
-                "Bad response signature detected: {'other': '1234', 'merchant_reference': '2-1'}."
-            )
-        ).exists()
+            context={'data': data}
+        )
         self.assertTemplateUsed(response, 'zeitlabs_payments/payment_error.html')
 
-    def test_bad_signature_renders_error_page(self):
+    @patch("payfort.views.AuditLog.log")
+    def test_bad_signature_renders_error_page(self, mock_audit_log):
         data = {
             'other': '1234',
             'merchant_reference': f'{self.site.id}-{self.cart.id}',
             'signature': 'invalid'
         }
-
-        assert not AuditLog.objects.filter(
-            action=AuditLog.AuditActions.BAD_RESPONSE_SIGNATURE,
-            cart=self.cart,
-            gateway='payfort',
-        ).exists()
-
         response = self.client.post(reverse('payfort:return'), data)
-
         assert response.status_code == 200
-        assert AuditLog.objects.filter(
+        mock_audit_log.assert_called_with(
             action=AuditLog.AuditActions.BAD_RESPONSE_SIGNATURE,
             cart=self.cart,
             gateway='payfort',
-            details=(
-                "Bad response signature detected: {'other': '1234', 'merchant_reference': '2-1', "
-                "'signature': 'invalid'}."
-            )
-        ).exists()
+            context={'data': data}
+        )
         self.assertTemplateUsed(response, 'zeitlabs_payments/payment_error.html')
 
     @patch('payfort.views.logger.error')
@@ -692,6 +583,12 @@ class PayFortReturnViewTest(TestCase):
         self.assertTemplateUsed(response, 'zeitlabs_payments/payment_error.html')
 
     def test_post_success(self):
+        def fake_reverse(name, args=None, kwargs=None):
+            if name.endswith("payment-error"):
+                return f"/fake/error/{args[0]}"
+            if name.endswith("payment-success"):
+                return f"/fake/success/{args[0]}"
+            return f"/fake/{name}"
         data = {
             'amount': '150',
             'response_code': '14000',
@@ -700,7 +597,7 @@ class PayFortReturnViewTest(TestCase):
             'command': 'PURCHASE',
             'response_message': 'Success',
             'merchant_reference': f'{self.site.id}-{self.cart.id}',
-            'currency': 'SAR',
+            'currency': 'USD',
             'status': '14',
             'eci': 'test'
         }
@@ -716,19 +613,14 @@ class PayFortReturnViewTest(TestCase):
 
         data.update({'signature': expected_signature})
 
-        response = self.client.post(reverse('payfort:return'), data)
-        self.assertTemplateUsed(response, 'zeitlabs_payments/wait_feedback.html')
-        assert response.context['ecommerce_transaction_id'] == '123456'
-        assert response.context['ecommerce_status_url'] == reverse('payfort:status')
-        assert response.context['ecommerce_error_url'] == reverse(
-            'zeitlabs_payments:payment-error',
-            args=[data['fort_id']]
-        )
-        assert response.context['ecommerce_success_url'] == reverse(
-            'zeitlabs_payments:payment-success',
-            args=[data['fort_id']]
-        )
-        assert response.context['ecommerce_max_attempts'] == 24
-        assert response.context['ecommerce_wait_time'] == 5000
-        for key, value in data.items():
-            assert response.context[key] == value
+        with patch("payfort.views.reverse", side_effect=fake_reverse):
+            response = self.client.post(reverse('payfort:return'), data)
+            self.assertTemplateUsed(response, 'zeitlabs_payments/wait_feedback.html')
+            assert response.context['ecommerce_transaction_id'] == '123456'
+            assert response.context['ecommerce_status_url'] == '/fake/payfort:status'
+            assert response.context['ecommerce_error_url'] == '/fake/error/123456'
+            assert response.context['ecommerce_success_url'] == '/fake/success/123456'
+            assert response.context['ecommerce_max_attempts'] == 24
+            assert response.context['ecommerce_wait_time'] == 5000
+            for key, value in data.items():
+                assert response.context[key] == value

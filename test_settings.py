@@ -33,6 +33,7 @@ INSTALLED_APPS = (
     'django.contrib.messages',
     'django.contrib.sites',
     'django.contrib.sessions',
+    'fake_models',
     'payfort',
 )
 
@@ -40,7 +41,7 @@ LOCALE_PATHS = [
     root('payfort', 'conf', 'locale'),
 ]
 
-ROOT_URLCONF = 'payfort.urls'
+ROOT_URLCONF = 'tests.test_urls'
 
 SECRET_KEY = 'insecure-secret-key'
 
@@ -72,7 +73,10 @@ PAYFORT_SETTINGS = {
     'request_sha_phrase': 'test-request-phrase',
     'response_sha_phrase': 'test-response-phrase',
     'sha_method': 'SHA-256',
-    'redirect_url': 'https://sbcheckout.payfort.com/FortAPI/paymentPage'
+    'redirect_url': 'https://fake_payfort.com'
 }
 
 SITE_ID = 1
+
+ECOMMERCE_PUBLIC_URL_ROOT = 'test.com'
+VALID_CURRENCY = 'USD'

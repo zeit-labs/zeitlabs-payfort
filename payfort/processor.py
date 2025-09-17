@@ -7,10 +7,10 @@ from urllib.parse import urljoin
 from django.conf import settings
 from django.http import HttpRequest, HttpResponse
 from django.middleware.csrf import get_token
-from django.shortcuts import render
+from django.template.response import TemplateResponse
 from django.urls import reverse
 from django.utils.translation import gettext_lazy as _
-from openedx.core.djangoapps.site_configuration import helpers as configuration_helpers
+from zeitlabs_payments import configuration_helpers
 from zeitlabs_payments.models import Cart
 from zeitlabs_payments.providers.base import BaseProcessor
 
@@ -126,6 +126,10 @@ class PayFort(BaseProcessor):
             use_client_side_checkout=use_client_side_checkout,
             **kwargs,
         )
-        return render(request, f'payfort/{self.SLUG}.html', {
-            'transaction_parameters': transaction_parameters,
-        })
+        return TemplateResponse(
+            request,
+            f'payfort/{self.SLUG}.html',
+            {
+                'transaction_parameters': transaction_parameters,
+            }
+        )

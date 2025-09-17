@@ -70,7 +70,6 @@
 ignore = migrations
 persistent = yes
 load-plugins = edx_lint.pylint,pylint_django,pylint_celery
-ignored-modules=common,zeitlabs_payments,openedx
 
 [MESSAGES CONTROL]
 enable = 
