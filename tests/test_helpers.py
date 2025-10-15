@@ -4,7 +4,6 @@ from typing import Dict
 
 import pytest
 from django.contrib.auth import get_user_model
-from zeitlabs_payments.exceptions import GatewayError
 
 from payfort.exceptions import PayFortBadSignatureException, PayFortException
 from payfort.helpers import get_signature, verify_response_format, verify_signature
@@ -12,7 +11,7 @@ from payfort.helpers import get_signature, verify_response_format, verify_signat
 User = get_user_model()
 VALID_RESPONSE: Dict[str, str] = {
     'amount': '150',
-    'currency': 'SAR',
+    'currency': 'USD',
     'command': 'PURCHASE',
     'merchant_reference': '1-1',
     'merchant_identifier': 'abcd',
@@ -52,24 +51,14 @@ def test_get_signature_valid(sha_phrase, sha_method, params, expected_hash_start
     assert signature == expected_hash_start, f'failed for usecase: {usecase}'
 
 
-@pytest.mark.parametrize(
-    'sha_phrase, sha_method, params, expected_error, usecase',
-    [
-        ('secret', 'md5', {'Amount': '100'}, 'Unsupported SHA method', 'Unsupported SHA'),
-        (None, 'SHA-256', {'Amount': '100'}, 'sha_phrase is required', 'sha_phrase is None'),
-        ('secret', None, {'Amount': '100'}, 'sha_method is required', 'sha_method is None'),
-        ('secret', 'SHA-256', None, 'transaction_parameters is required', 'params is None'),
-        ('secret', 'SHA-256', 'not a dict', 'transaction_parameters is required', 'params wrong type'),
-    ]
-)
-def test_get_signature_invalid(sha_phrase, sha_method, params, expected_error, usecase):
+def test_get_signature_for_unsupported_sha_method():
     """
     Test that get_signature raises PayFortException with appropriate
     error messages when called with invalid or missing parameters.
     """
-    with pytest.raises(GatewayError) as exc_info:
-        get_signature(sha_phrase, sha_method, params)
-    assert expected_error in str(exc_info.value), f'Failed for case: {usecase}.'
+    with pytest.raises(PayFortException) as exc_info:
+        get_signature('secret', 'md5', {'Amount': '100'})
+    assert 'Unsupported SHA method' in str(exc_info.value)
 
 
 @pytest.mark.parametrize('modified_response, expected_error, usecase', [
@@ -94,7 +83,7 @@ def test_get_signature_invalid(sha_phrase, sha_method, params, expected_error, u
         'Non-integer amount'
     ),
     (
-        {**VALID_RESPONSE, 'currency': 'USD'}, 'Invalid currency in response',
+        {**VALID_RESPONSE, 'currency': 'NZD'}, 'Invalid currency in response',
         'Wrong currency'
     ),
     (

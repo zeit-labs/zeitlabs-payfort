@@ -19,13 +19,14 @@ def fake_request():
     request = MagicMock(spec=HttpRequest)
     request.build_absolute_uri.return_value = 'https://example.com'
     request.site = Site.objects.get(domain='example.com')
+    request.META = {}
     return request
 
 
 @pytest.fixture
 def cart():
     """mock cart fixture"""
-    item = CatalogueItem.objects.get(sku='custom-sku-1')
+    item = CatalogueItem.objects.create(sku='custom-sku-1', price='45', currency='USD')
     user_cart = Cart.objects.create(user=User.objects.get(id=3), status=Cart.Status.PROCESSING)
     user_cart.items.create(
         catalogue_item=item,
@@ -54,7 +55,9 @@ class TestPayFortProcessor:
         assert processor.redirect_url == 'https://fake_payfort.com'
         assert processor.return_url == 'https://lms.example.com/payfort/return/'
 
-    def test_get_payment_method_metadata_returns_expected(self, cart):  # pylint: disable=redefined-outer-name
+    def test_get_payment_method_metadata_returns_expected(
+        self, cart, base_data
+    ):  # pylint: disable=redefined-outer-name, unused-argument
         """Test get_payment_method_metadata returns correct dict with slug, title, checkout_text, and URL."""
         result = PayFort.get_payment_method_metadata(cart)
         assert result['slug'] == PayFort.SLUG
@@ -81,7 +84,7 @@ class TestPayFortProcessor:
         assert result['customer_email'] == 'user3@example.com'
         assert result['return_url'] == 'https://return.url'
         assert result['language'] == 'en'
-        assert result['amount'] == 5000
+        assert result['amount'] == 45
         assert result['currency'] == cart.items.all()[0].catalogue_item.currency
         assert 'order_reference' not in result
         assert 'user_email' not in result
@@ -142,3 +145,23 @@ class TestPayFortProcessor:
         assert result['csrfmiddlewaretoken'] == 'csrf1234'
         for key in keys_to_check:
             assert key in result
+
+    def test_payment_view(self, fake_request, cart):  # pylint: disable=redefined-outer-name
+        """Test payment view context and template used."""
+        processor = PayFort()
+        processor.access_code = 'AC123'
+        processor.merchant_identifier = 'MID456'
+        processor.return_url = 'https://return.url'
+
+        response = processor.payment_view(cart, fake_request, False)
+        assert response.template_name == 'payfort/payfort.html'
+
+        response.render()
+        assert response.context_data['transaction_parameters']['command'] == 'PURCHASE'
+        assert response.context_data['transaction_parameters']['access_code'] == 'AC123'
+        assert response.context_data['transaction_parameters']['merchant_identifier'] == 'MID456'
+        assert response.context_data['transaction_parameters']['customer_email'] == 'user3@example.com'
+        assert response.context_data['transaction_parameters']['return_url'] == 'https://return.url'
+        assert response.context_data['transaction_parameters']['language'] == 'en'
+        assert response.context_data['transaction_parameters']['amount'] == 45
+        assert response.context_data['transaction_parameters']['currency'] == 'USD'
