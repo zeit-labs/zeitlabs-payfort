@@ -271,7 +271,7 @@ class PayFortStatusView(PayFortBaseView):
 
         status_code = {
             Cart.Status.PAID: 200,
-            Cart.Status.PROCESSING: 204,
+            Cart.Status.PROCESSING: 202,
         }.get(cart.status, 404)
 
         if status_code == 200:
@@ -292,7 +292,7 @@ class PayFortStatusView(PayFortBaseView):
             error_msg = f'Cart is in {Cart.Status.PAID} status, unable to retrieve invoice with given transaction id.'
             logger.error(error_msg)
             data = {'error': error_msg}
-            status_code = 204
+            status_code = 202
         else:
             data = {'error': f'cart is in status: {cart.status}.'}
 
