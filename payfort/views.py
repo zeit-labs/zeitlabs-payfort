@@ -169,6 +169,7 @@ class PayfortFeedbackView(PayFortBaseView):
 
         verify_response_format(data)
 
+        cart_id = self.cart.id
         if self.cart.status != Cart.Status.PROCESSING:
             AuditLog.log(
                 action=AuditLog.AuditActions.RESPONSE_INVALID_CART,
@@ -176,12 +177,12 @@ class PayfortFeedbackView(PayFortBaseView):
                 gateway=self.payment_processor.SLUG,
                 context={'cart_status': self.cart.status, 'required_cart_state': Cart.Status.PROCESSING}
             )
-            logger.warning(f'Cart {self.cart.id} in invalid status: {self.cart.status} (expected: PROCESSING).')
+            logger.warning(f'Cart {cart_id} in invalid status: {self.cart.status} (expected: PROCESSING).')
             return HttpResponse(status=200)
 
         try:
             with transaction.atomic():
-                logger.info(f'Recording payment transaction for cart {self.cart.id}.')
+                logger.info(f'Recording payment transaction for cart {cart_id}.')
                 transaction_record = self.payment_processor.handle_payment(
                     cart=self.cart,
                     user=request.user if request.user.is_authenticated else None,
@@ -211,11 +212,11 @@ class PayfortFeedbackView(PayFortBaseView):
                 gateway=self.payment_processor.SLUG,
                 context={
                     'transaction_id': data['fort_id'],
-                    'cart_id': self.cart.id,
+                    'cart_id': cart_id,
                     'site_id': self.site.id
                 }
             )
-            logger.error(f'Payment transaction failed and rolled back for cart {self.cart.id}: {str(e)}')
+            logger.error(f'Payment transaction failed and rolled back for cart {cart_id}: {str(e)}')
             return HttpResponse(status=200)
 
         try:
@@ -228,9 +229,9 @@ class PayfortFeedbackView(PayFortBaseView):
                 gateway=self.payment_processor.SLUG,
                 context={}
             )
-            logger.info(f'Successfully fulfilled cart {self.cart.id} and created invoice {invoice.id}.')
+            logger.info(f'Successfully fulfilled cart {cart_id} and created invoice {invoice.id}.')
         except Exception as e:  # pylint: disable=broad-exception-caught
-            logger.error(f'Failed to fulfill cart {self.cart.id} or to create invoice: {str(e)}')
+            logger.error(f'Failed to fulfill cart {cart_id} or to create invoice: {str(e)}')
         return HttpResponse(status=200)
 
 
