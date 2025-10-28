@@ -8,3 +8,7 @@ class PayFortException(GatewayError):
 
 class PayFortBadSignatureException(PayFortException):
     """PayFort bad signature exception."""
+
+
+class PayFortStatelessLoginError(PayFortException):
+    """PayFort stateless login error exception."""

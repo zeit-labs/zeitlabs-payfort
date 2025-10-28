@@ -132,3 +132,19 @@ def verify_signature(sha_phrase: str, sha_method: str, data: Dict[str, Any]) -> 
         raise PayFortBadSignatureException(
             f'Response signature mismatch. merchant_reference: {data.get("merchant_reference", "none")}'
         )
+
+
+def value_or_none_str(value: Any) -> str:
+    """
+    Return 'None' for None values and '<Empty String>' for empty strings.
+
+    :param value: The value to check.
+    :type value: Any
+    :return: A string representation of the value.
+    :rtype: str
+    """
+    if value is None:
+        return 'None'
+    if isinstance(value, str) and value == '':
+        return '<Empty String>'
+    return str(value)
