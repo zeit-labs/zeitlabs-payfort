@@ -148,3 +148,13 @@ def value_or_none_str(value: Any) -> str:
     if isinstance(value, str) and value == '':
         return '<Empty String>'
     return str(value)
+
+
+def get_cache_key(merchant_reference: str) -> str:
+    """
+    Generate a cache key for the given merchant reference.
+
+    :param merchant_reference: The merchant reference.
+    :return: The generated cache key.
+    """
+    return f'payfort_transaction_{merchant_reference}'

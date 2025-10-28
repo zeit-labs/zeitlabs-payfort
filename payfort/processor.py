@@ -5,6 +5,7 @@ from typing import Any, Dict, Optional
 from urllib.parse import urljoin
 
 from django.conf import settings
+from django.core.cache import cache
 from django.http import HttpRequest, HttpResponse
 from django.middleware.csrf import get_token
 from django.shortcuts import render
@@ -14,7 +15,7 @@ from openedx.core.djangoapps.site_configuration import helpers as configuration_
 from zeitlabs_payments.models import Cart
 from zeitlabs_payments.providers.base import BaseProcessor
 
-from .helpers import get_signature
+from .helpers import get_cache_key, get_signature
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +83,7 @@ class PayFort(BaseProcessor):
     def get_transaction_parameters(
         self,
         cart: Cart,
-        request: Optional[HttpRequest] = None,
+        request: HttpRequest,
         use_client_side_checkout: bool = False,  # pylint: disable=unused-argument
         **kwargs: Any
     ) -> dict:
@@ -97,11 +98,11 @@ class PayFort(BaseProcessor):
         """
         transaction_parameters = self.get_transaction_parameters_base(cart, request)
         if settings.PAYFORT_SETTINGS.get('stateless_return', False):
-            transaction_parameters['merchant_extra1'] = json.dumps({
+            cache.set(get_cache_key(transaction_parameters['merchant_reference']), json.dumps({
                 'caller_user_id': request.user.id,
                 'caller_user_backend': request.session.get('_auth_user_backend', ''),
                 'site_id': request.site.id,
-            })
+            }), timeout=60*15)
         transaction_parameters.update({
             'signature': self.generate_signature(transaction_parameters),
             'payment_page_url': self.redirect_url,
