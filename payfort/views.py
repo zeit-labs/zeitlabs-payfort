@@ -86,7 +86,7 @@ class PayFortReturnView(PayFortBaseView):
     WAIT_TIME = 5000
 
     @staticmethod
-    def get_extra_info_dict(extra_info_str: str) -> dict | None:
+    def get_extra_info_dict(extra_info_str: str) -> dict:
         """Parse extra info JSON string to dictionary."""
         try:
             return json.loads(extra_info_str)
@@ -98,7 +98,7 @@ class PayFortReturnView(PayFortBaseView):
             raise PayFortStatelessLoginError from exc
 
     @staticmethod
-    def stateless_login(request, extra_info: dict) -> None:
+    def stateless_login(request: Any, extra_info: dict) -> None:
         """Log in user from stateless return data."""
         caller_user_backend = extra_info.get('caller_user_backend', '')
         if not caller_user_backend:
@@ -128,14 +128,13 @@ class PayFortReturnView(PayFortBaseView):
                         continue
                     login(request, user)
                     return
-                except Exception as exc:
+                except Exception as exc:  # pylint: disable=broad-exception-caught
                     error_message = f'Payfort stateless login failed: {str(exc)}'
             if not error_message:
                 error_message = f'Payfort stateless login failed: No backend could load this user ({caller_user_id}).'
 
         logger.error(error_message)
         raise PayFortStatelessLoginError(error_message)
-
 
     def post(self, request: Any) -> HttpResponse:
         """Handle the POST request from PayFort after processing payment page."""

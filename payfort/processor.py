@@ -82,7 +82,7 @@ class PayFort(BaseProcessor):
     def get_transaction_parameters(
         self,
         cart: Cart,
-        request: Optional[HttpRequest] = None,
+        request: HttpRequest,
         use_client_side_checkout: bool = False,  # pylint: disable=unused-argument
         **kwargs: Any
     ) -> dict:
