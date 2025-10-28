@@ -21,8 +21,17 @@ from .processor import PayFort
 logger = logging.getLogger(__name__)
 
 
+@method_decorator(transaction.non_atomic_requests, name='dispatch')
+@method_decorator(csrf_exempt, name='dispatch')
 class PayFortBaseView(View):
-    """Payfort Base View."""
+    """
+    Payfort Base View.
+
+    CSRF exemption is applied as PayFort will not include CSRF tokens in their requests.
+
+    non_atomic_requests is used to avoid wrapping the entire request in a transaction, because we need to save
+    logs in AuditLog table even if later processing fails and rolls back.
+    """
 
     @property
     def payment_processor(self) -> PayFort:
@@ -62,11 +71,6 @@ class PayFortBaseView(View):
         except (ValueError, GatewayError):
             logger.error(f'Payfort Error! merchant_reference: {reference} is invalid. Unable to extract site.')
             return None
-
-    @method_decorator(csrf_exempt)
-    def dispatch(self, request: Any, *args: Any, **kwargs: Any) -> Any:
-        """Dispatch the request to the appropriate handler."""
-        return super().dispatch(request, *args, **kwargs)
 
 
 class PayFortReturnView(PayFortBaseView):
