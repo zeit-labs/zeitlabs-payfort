@@ -1,9 +1,9 @@
 """Payfort Views."""
-import json
 import logging
 from typing import Any
 
 from django.conf import settings
+from django.core.cache import cache
 from django.contrib.auth import get_backends, get_user_model, login
 from django.contrib.sites.models import Site
 from django.db import transaction
@@ -18,7 +18,7 @@ from zeitlabs_payments.exceptions import DuplicateTransactionError, GatewayError
 from zeitlabs_payments.models import AuditLog, Cart, Invoice
 
 from .exceptions import PayFortBadSignatureException, PayFortException, PayFortStatelessLoginError
-from .helpers import SUCCESS_STATUS, value_or_none_str, verify_response_format, verify_signature
+from .helpers import SUCCESS_STATUS, get_cache_key, value_or_none_str, verify_response_format, verify_signature
 from .processor import PayFort
 
 logger = logging.getLogger(__name__)
@@ -86,19 +86,7 @@ class PayFortReturnView(PayFortBaseView):
     WAIT_TIME = 5000
 
     @staticmethod
-    def get_extra_info_dict(extra_info_str: str) -> dict | None:
-        """Parse extra info JSON string to dictionary."""
-        try:
-            return json.loads(extra_info_str)
-        except (TypeError, json.JSONDecodeError) as exc:
-            logger.error(
-                'Payfort stateless login failed: Invalid extra info data. %s',
-                value_or_none_str(extra_info_str),
-            )
-            raise PayFortStatelessLoginError from exc
-
-    @staticmethod
-    def stateless_login(request, extra_info: dict) -> None:
+    def stateless_login(request: Any, extra_info: dict) -> None:
         """Log in user from stateless return data."""
         caller_user_backend = extra_info.get('caller_user_backend', '')
         if not caller_user_backend:
@@ -127,15 +115,15 @@ class PayFortReturnView(PayFortBaseView):
                     else:
                         continue
                     login(request, user)
+                    logger.info(f'Payfort stateless login success for user: {user.pk}, using backend: {user.backend}')
                     return
-                except Exception as exc:
+                except Exception as exc:  # pylint: disable=broad-exception-caught
                     error_message = f'Payfort stateless login failed: {str(exc)}'
             if not error_message:
                 error_message = f'Payfort stateless login failed: No backend could load this user ({caller_user_id}).'
 
         logger.error(error_message)
         raise PayFortStatelessLoginError(error_message)
-
 
     def post(self, request: Any) -> HttpResponse:
         """Handle the POST request from PayFort after processing payment page."""
@@ -178,7 +166,7 @@ class PayFortReturnView(PayFortBaseView):
 
             if settings.PAYFORT_SETTINGS.get('stateless_return', False):
                 try:
-                    extra_info = self.get_extra_info_dict(data.get('merchant_extra1'))
+                    extra_info = cache.get(get_cache_key(data['merchant_reference']))
                     self.stateless_login(request, extra_info)
                 except PayFortStatelessLoginError:
                     return render(request, 'zeitlabs_payments/payment_error.html')
