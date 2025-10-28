@@ -1,5 +1,5 @@
 """Payfort processor."""
-
+import json
 import logging
 from typing import Any, Dict, Optional
 from urllib.parse import urljoin
@@ -82,7 +82,7 @@ class PayFort(BaseProcessor):
     def get_transaction_parameters(
         self,
         cart: Cart,
-        request: Optional[HttpRequest] = None,
+        request: HttpRequest,
         use_client_side_checkout: bool = False,  # pylint: disable=unused-argument
         **kwargs: Any
     ) -> dict:
@@ -96,6 +96,12 @@ class PayFort(BaseProcessor):
         :return: A dictionary of transaction parameters
         """
         transaction_parameters = self.get_transaction_parameters_base(cart, request)
+        if settings.PAYFORT_SETTINGS.get('stateless_return', False):
+            transaction_parameters['merchant_extra1'] = json.dumps({
+                'caller_user_id': request.user.id,
+                'caller_user_backend': request.session.get('_auth_user_backend', ''),
+                'site_id': request.site.id,
+            })
         transaction_parameters.update({
             'signature': self.generate_signature(transaction_parameters),
             'payment_page_url': self.redirect_url,

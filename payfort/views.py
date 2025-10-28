@@ -1,7 +1,10 @@
 """Payfort Views."""
+import json
 import logging
 from typing import Any
 
+from django.conf import settings
+from django.contrib.auth import get_backends, get_user_model, login
 from django.contrib.sites.models import Site
 from django.db import transaction
 from django.http import HttpResponse, JsonResponse
@@ -14,8 +17,8 @@ from rest_framework.permissions import IsAuthenticated
 from zeitlabs_payments.exceptions import DuplicateTransactionError, GatewayError, InvalidCartError
 from zeitlabs_payments.models import AuditLog, Cart, Invoice
 
-from .exceptions import PayFortBadSignatureException, PayFortException
-from .helpers import SUCCESS_STATUS, verify_response_format, verify_signature
+from .exceptions import PayFortBadSignatureException, PayFortException, PayFortStatelessLoginError
+from .helpers import SUCCESS_STATUS, value_or_none_str, verify_response_format, verify_signature
 from .processor import PayFort
 
 logger = logging.getLogger(__name__)
@@ -82,6 +85,57 @@ class PayFortReturnView(PayFortBaseView):
     MAX_ATTEMPTS = 24
     WAIT_TIME = 5000
 
+    @staticmethod
+    def get_extra_info_dict(extra_info_str: str) -> dict:
+        """Parse extra info JSON string to dictionary."""
+        try:
+            return json.loads(extra_info_str)
+        except (TypeError, json.JSONDecodeError) as exc:
+            logger.error(
+                'Payfort stateless login failed: Invalid extra info data. %s',
+                value_or_none_str(extra_info_str),
+            )
+            raise PayFortStatelessLoginError from exc
+
+    @staticmethod
+    def stateless_login(request: Any, extra_info: dict) -> None:
+        """Log in user from stateless return data."""
+        caller_user_backend = extra_info.get('caller_user_backend', '')
+        if not caller_user_backend:
+            backends = get_backends()
+        else:
+            backends = [caller_user_backend]
+
+        site_id = extra_info.get('site_id')
+        caller_user_id = extra_info.get('caller_user_id')
+        error_message = ''
+        try:
+            site = Site.objects.get(id=site_id)
+            user = get_user_model().objects.get(pk=caller_user_id)
+        except Site.DoesNotExist:
+            error_message = f'Payfort stateless login failed: Site does not exist {value_or_none_str(site_id)}'
+        except get_user_model().DoesNotExist:
+            error_message = f'Payfort stateless login failed: User does not exist {value_or_none_str(caller_user_id)}'
+        else:
+            request.site = site
+            for backend in backends:
+                try:
+                    if isinstance(backend, str):
+                        user.backend = backend
+                    elif hasattr(backend, 'get_user') and backend.get_user(user.pk):
+                        user.backend = f'{backend.__module__}.{backend.__class__.__name__}'
+                    else:
+                        continue
+                    login(request, user)
+                    return
+                except Exception as exc:  # pylint: disable=broad-exception-caught
+                    error_message = f'Payfort stateless login failed: {str(exc)}'
+            if not error_message:
+                error_message = f'Payfort stateless login failed: No backend could load this user ({caller_user_id}).'
+
+        logger.error(error_message)
+        raise PayFortStatelessLoginError(error_message)
+
     def post(self, request: Any) -> HttpResponse:
         """Handle the POST request from PayFort after processing payment page."""
         data = request.POST.dict()
@@ -120,6 +174,14 @@ class PayFortReturnView(PayFortBaseView):
             )
             data['ecommerce_max_attempts'] = self.MAX_ATTEMPTS
             data['ecommerce_wait_time'] = self.WAIT_TIME
+
+            if settings.PAYFORT_SETTINGS.get('stateless_return', False):
+                try:
+                    extra_info = self.get_extra_info_dict(data.get('merchant_extra1'))
+                    self.stateless_login(request, extra_info)
+                except PayFortStatelessLoginError:
+                    return render(request, 'zeitlabs_payments/payment_error.html')
+
             return render(request=request, template_name=self.template_name, context=data)
 
         logger.error(

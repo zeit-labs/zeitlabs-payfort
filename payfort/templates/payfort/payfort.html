@@ -27,6 +27,9 @@
     <input type="hidden" name="signature" value="{{ transaction_parameters.signature }}">
     <input type="hidden" name="customer_name" value="{{ transaction_parameters.customer_name }}">
     <input type="hidden" name="return_url" value="{{ transaction_parameters.return_url }}">
+    {% if transaction_parameters.merchant_extra1 %}
+        <input type="hidden" name="merchant_extra1" value="{{ transaction_parameters.merchant_extra1 }}">
+    {% endif %}
 </form>
 
 <script type="text/javascript">
