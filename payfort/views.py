@@ -167,6 +167,7 @@ class PayFortReturnView(PayFortBaseView):
             if settings.PAYFORT_SETTINGS.get('stateless_return', False):
                 try:
                     extra_info = cache.get(get_cache_key(data['merchant_reference']))
+                    cache.delete(get_cache_key(data['merchant_reference']))
                     self.stateless_login(request, extra_info)
                 except PayFortStatelessLoginError:
                     return render(request, 'zeitlabs_payments/payment_error.html')
