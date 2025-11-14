@@ -11,7 +11,7 @@ from django.utils.decorators import method_decorator
 from django.views import View
 from django.views.decorators.csrf import csrf_exempt
 from rest_framework.permissions import IsAuthenticated
-from zeitlabs_payments.exceptions import DuplicateTransactionError, GatewayError, InvalidCartError
+from zeitlabs_payments.exceptions import GatewayError, InvalidCartError
 from zeitlabs_payments.models import AuditLog, Cart, Invoice
 
 from .exceptions import PayFortBadSignatureException, PayFortException
@@ -173,69 +173,19 @@ class PayfortFeedbackView(PayFortBaseView):
 
         verify_response_format(data)
 
-        cart_id = self.cart.id
-        if self.cart.status != Cart.Status.PROCESSING:
-            AuditLog.log(
-                action=AuditLog.AuditActions.RESPONSE_INVALID_CART,
-                cart=self.cart,
-                gateway=self.payment_processor.SLUG,
-                context={'cart_status': self.cart.status, 'required_cart_state': Cart.Status.PROCESSING}
-            )
-            logger.warning(f'Cart {cart_id} in invalid status: {self.cart.status} (expected: PROCESSING).')
-            return HttpResponse(status=200)
-
-        try:
-            with transaction.atomic():
-                logger.info(f'Recording payment transaction for cart {cart_id}.')
-                transaction_record = self.payment_processor.handle_payment(
-                    cart=self.cart,
-                    user=request.user if request.user.is_authenticated else None,
-                    transaction_status=data['response_message'],
-                    transaction_id=data['fort_id'],
-                    method=data['payment_option'],
-                    amount=data['amount'],
-                    currency=data['currency'],
-                    reason=data['acquirer_response_message'],
-                    response=data
-                )
-        except DuplicateTransactionError:
-            AuditLog.log(
-                action=AuditLog.AuditActions.DUPLICATE_TRANSACTION,
-                cart=self.cart,
-                gateway=self.payment_processor.SLUG,
-                context={
-                    'transaction_id': data['fort_id'],
-                    'cart_status': self.cart.status
-                }
-            )
-            return HttpResponse(status=200)
-        except Exception as e:  # pylint: disable=broad-exception-caught
-            AuditLog.log(
-                action=AuditLog.AuditActions.TRANSACTION_ROLLED_BACK,
-                cart=self.cart,
-                gateway=self.payment_processor.SLUG,
-                context={
-                    'transaction_id': data['fort_id'],
-                    'cart_id': cart_id,
-                    'site_id': self.site.id
-                }
-            )
-            logger.error(f'Payment transaction failed and rolled back for cart {cart_id}: {str(e)}')
-            return HttpResponse(status=200)
-
-        try:
-            self.cart.refresh_from_db()
-            invoice = self.payment_processor.create_invoice(self.cart, request, transaction_record)
-            self.payment_processor.fulfill_cart(self.cart)
-            AuditLog.log(
-                action=AuditLog.AuditActions.CART_FULFILLED,
-                cart=self.cart,
-                gateway=self.payment_processor.SLUG,
-                context={}
-            )
-            logger.info(f'Successfully fulfilled cart {cart_id} and created invoice {invoice.id}.')
-        except Exception as e:  # pylint: disable=broad-exception-caught
-            logger.error(f'Failed to fulfill cart {cart_id} or to create invoice: {str(e)}')
+        invoice = self.payment_processor.process_payment_and_update_records(
+            cart=self.cart,
+            data=data,
+            request=request,
+            transaction_id=data['fort_id'],
+            transaction_status=data['response_message'],
+            method=data['payment_option'],
+            amount=data['amount'],
+            currency=data['currency'],
+            reason=data['acquirer_response_message'],
+            site_id=self.site.id,
+        )
+        logger.info(f'Cart is fullfilled and invoice with {invoice.invoice_numebr} has been generated successfully.')
         return HttpResponse(status=200)
 
 
