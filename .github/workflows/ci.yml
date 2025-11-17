@@ -15,11 +15,18 @@ jobs:
       matrix:
         os: [ubuntu-latest]
         python-version: ["3.11"]
-        toxenv: [quality]
+        toxenv: [quality, django42]
+
     steps:
-      - uses: actions/checkout@v5
-      - name: setup python
-        uses: actions/setup-python@v6
+      - name: Checkout current repo
+        uses: actions/checkout@v4
+
+      - name: Clone zeitlabs-payments
+        run: |
+          git clone --branch main --single-branch https://github.com/zeit-labs/zeitlabs-payments.git ../zeitlabs-payments
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
 

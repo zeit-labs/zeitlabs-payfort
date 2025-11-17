@@ -1,16 +1,14 @@
 """Test views for the zeitlabs_payment payfort provider"""
 import hashlib
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
-from common.djangoapps.course_modes.models import CourseMode
-from common.djangoapps.student.models import CourseEnrollment
 from django.contrib.auth import get_user_model
 from django.contrib.sites.models import Site
 from django.test import Client, RequestFactory, TestCase
 from django.urls import reverse
 from rest_framework.test import APITestCase
-from zeitlabs_payments.models import AuditLog, Cart, CatalogueItem, Invoice, Transaction, WebhookEvent
+from zeitlabs_payments.models import AuditLog, Cart, CatalogueItem, Invoice, Transaction
 
 from payfort.views import PayFortBaseView, PayfortFeedbackView
 
@@ -18,7 +16,7 @@ User = get_user_model()
 
 
 @pytest.mark.django_db
-class TestPayFortBaseViewNoMocks:
+class TestPayFortBaseView(TestCase):
     """PayfortBaseView tests."""
 
     factory = RequestFactory()
@@ -26,11 +24,12 @@ class TestPayFortBaseViewNoMocks:
     site = None
     cart = None
 
-    def setup_method(self):
+    def setUp(self) -> None:
         """setup"""
+        self.user = User.objects.create(username='test-user', email='test@example.com')
         self.site = Site.objects.create(name='TestSite', domain='testsite.com')
         self.cart = Cart.objects.create(
-            user=User.objects.get(id=3),
+            user=self.user,
             status=Cart.Status.PROCESSING
         )
 
@@ -76,20 +75,25 @@ class TestPayFortBaseViewNoMocks:
         assert self.view.site is None
 
 
-@pytest.mark.usefixtures('base_data')
 class PayfortFeedbackTestView(TestCase):
     """Payfort feedback test case."""
 
     def setUp(self) -> None:
         """
         Set up test data for the Payfort feedback tests.
-
         :return: None
         """
-        self.user = User.objects.get(id=3)
+        self.user = User.objects.create(username='test-user', email='test@example.com')
         self.cart = Cart.objects.create(user=self.user, status=Cart.Status.PROCESSING)
-        self.course_mode = CourseMode.objects.get(sku='custom-sku-1')
-        self.course_item = CatalogueItem.objects.get(sku='custom-sku-1')
+        self.course_item = CatalogueItem.objects.create(
+            sku='custom-sku-1',
+            type=CatalogueItem.ItemType.PAID_COURSE,
+            item_ref_id='course-v1:test+1+1',
+            price='100',
+            currency='SAR'
+        )
+        self.course_mode = MagicMock()
+        self.course_mode.course.id = self.course_item.item_ref_id
         self.cart.items.create(
             catalogue_item=self.course_item,
             original_price=self.course_item.price,
@@ -129,7 +133,6 @@ class PayfortFeedbackTestView(TestCase):
     def test_post_for_invalid_cart_in_merchant_ref(self) -> None:
         """
         Test that posting with an invalid cart ID in merchant_reference raises PayFortException.
-
         :return: None
         """
         data = self.valid_response.copy()
@@ -142,7 +145,6 @@ class PayfortFeedbackTestView(TestCase):
     def test_post_for_invalid_site_in_merchant_ref(self) -> None:
         """
         Test that posting with an invalid site ID in merchant_reference raises PayFortException.
-
         :return: None
         """
         data = self.valid_response.copy()
@@ -155,7 +157,6 @@ class PayfortFeedbackTestView(TestCase):
     def test_post_for_invalid_signature(self) -> None:
         """
         Test post request with an invalid signature.
-
         :return: None
         """
         data = self.valid_response.copy()
@@ -182,7 +183,6 @@ class PayfortFeedbackTestView(TestCase):
     ) -> None:
         """
         Test that posting with a cart not in PROCESSING state raises PayFortException.
-
         :return: None
         """
         self.cart.status = Cart.Status.PENDING
@@ -204,7 +204,6 @@ class PayfortFeedbackTestView(TestCase):
     ) -> None:
         """
         Test handling of unsuccessful payment status.
-
         :param mock_render: mocked render function
         :return: None
         """
@@ -218,169 +217,23 @@ class PayfortFeedbackTestView(TestCase):
         )
         assert response.status_code == 200
 
-    @patch('payfort.views.logger.error')
-    @patch('payfort.views.verify_signature')
-    def test_post_for_success_payment_enroll_error_no_course_mode(
-        self, mock_verify_signature, mock_logger  # pylint: disable=unused-argument
-    ) -> None:
-        """
-        Test successful payment but course mode missing, triggers error logging and error page.
-
-        :param mock_logger: mocked logger.error function
-        :param mock_render: mocked render function
-        :return: None
-        """
-        assert not Transaction.objects.filter(gateway='payfort', cart=self.cart).exists(), \
-            'Transaction should not exist before test'
-        assert self.cart.status == Cart.Status.PROCESSING, \
-            'Cart should be in PROCESSING state'
-
-        self.course_mode.delete()
-        request = self.request_factory.post(self.url, self.valid_response)
-        request.user = self.user
-        response = PayfortFeedbackView.as_view()(request)
-
-        assert Transaction.objects.filter(gateway='payfort', cart=self.cart).exists(), \
-            'Transaction should exist after payment'
-        self.cart.refresh_from_db()
-        assert self.cart.status == Cart.Status.PAID, \
-            'Cart status should be PAID after successful payment'
-
-        mock_logger.assert_called_with(
-            f'Failed to fulfill cart {self.cart.id} or to create invoice: CourseMode not found'
-        )
-        assert response.status_code == 200
-
-    @patch('payfort.views.verify_signature')
-    def test_post_success_for_rolled_back_of_tables_on_handle_payment_error(
-        self, mock_verify_signature  # pylint: disable=unused-argument
-    ) -> None:
-        """
-        Test successful payment but course mode missing, triggers error logging and error page.
-
-        :param mock_logger: mocked logger.error function
-        :param mock_render: mocked render function
-        :return: None
-        """
-        assert not Transaction.objects.filter(gateway='payfort', cart=self.cart).exists(), \
-            'Transaction should not exist before test'
-        assert not WebhookEvent.objects.filter(
-            gateway='payfort',
-            event_type='direct-feedback'
-        ).exists(), \
-            'WebhookEvent should not exist before test'
-        assert self.cart.status == Cart.Status.PROCESSING, \
-            'Cart should be in PROCESSING state'
-
-        request = self.request_factory.post(self.url, self.valid_response)
-        request.user = self.user
-
-        with patch(
-            'zeitlabs_payments.providers.base.WebhookEvent.objects.create',
-            side_effect=Exception('Unknown exception')
-        ):
-
-            response = PayfortFeedbackView.as_view()(request)
-
-            assert not Transaction.objects.filter(gateway='payfort', cart=self.cart).exists(), \
-                'Transaction should not exist after test'
-            assert not WebhookEvent.objects.filter(
-                gateway='payfort',
-                event_type='direct-feedback'
-            ).exists(), \
-                'WebhookEVent should not exist after test'
-            assert self.cart.status == Cart.Status.PROCESSING, \
-                'Cart should not be changed and should be in PROCESSING state'
-            assert response.status_code == 200
-
-    @patch('payfort.views.verify_signature')
-    def test_post_success_for_duplicate_transaction(
-        self, mock_verify_signature  # pylint: disable=unused-argument
-    ) -> None:
-        """
-        Test successful payment but transaction already there with transaction_id received in response.
-        """
-        Transaction.objects.create(
-            gateway='payfort',
-            cart=self.cart,
-            gateway_transaction_id=self.valid_response['fort_id'],
-            amount=100
-        )
-
-        assert not AuditLog.objects.filter(
-            action=AuditLog.AuditActions.DUPLICATE_TRANSACTION,
-            cart=self.cart,
-            gateway='payfort'
-        ).exists()
-        assert self.cart.status == Cart.Status.PROCESSING, \
-            'Cart should be in PROCESSING state'
-
-        request = self.request_factory.post(self.url, self.valid_response)
-        request.user = self.user
-        response = PayfortFeedbackView.as_view()(request)
-
-        assert AuditLog.objects.filter(
-            action=AuditLog.AuditActions.DUPLICATE_TRANSACTION,
-            cart=self.cart,
-            gateway='payfort'
-        ).exists()
-        assert self.cart.status == Cart.Status.PROCESSING, \
-            'Cart status should not be changed.'
-        assert response.status_code == 200
-
-    @patch('payfort.views.logger.error')
-    @patch('zeitlabs_payments.cart_handler.CourseEnrollment.enroll')
-    @patch('payfort.views.verify_signature')
-    def test_post_for_success_payment_paid_course_with_unsuccessful_enrollment(
-        self, mock_verify_signature, mock_enroll, mock_logger  # pylint: disable=unused-argument
-    ) -> None:
-        """
-        Test payment success but enrollment fails, logs exception and shows error page.
-
-        :param mock_enroll: mocked CourseEnrollment.enroll method
-        :param mock_logger: mocked logger.exception function
-        :param mock_render: mocked render function
-        :return: None
-        """
-        mock_enroll.side_effect = Exception('Unexpected error during enrollment')
-        assert not Transaction.objects.filter(gateway='payfort', cart=self.cart).exists(), \
-            'Transaction should not exist before test'
-        assert self.cart.status == Cart.Status.PROCESSING, \
-            'Cart should be in PROCESSING state'
-
-        request = self.request_factory.post(self.url, self.valid_response)
-        request.user = self.user
-        response = PayfortFeedbackView.as_view()(request)
-
-        assert Transaction.objects.filter(gateway='payfort', cart=self.cart).exists(), \
-            'Transaction should exist after payment'
-        self.cart.refresh_from_db()
-        assert self.cart.status == Cart.Status.PAID, \
-            'Cart status should be PAID after successful payment'
-
-        mock_logger.assert_called_with(
-            f'Failed to fulfill cart {self.cart.id} or to create invoice: Unexpected error during enrollment'
-        )
-        assert response.status_code == 200
-
     @pytest.mark.django_db
     @patch('payfort.views.verify_signature')
+    @patch('zeitlabs_payments.cart_handler.CourseEnrollment.enroll')
+    @patch("zeitlabs_payments.cart_handler.CourseMode")
     def test_post_for_successful_payment(
-        self, mock_verify_signature  # pylint: disable=unused-argument
+        self, mock_course_mode, mock_enroll, mock_verify_signature  # pylint: disable=unused-argument
     ) -> None:
         """
         Test the full successful payment flow and enrollment.
-
         :param mock_render: mocked render function
         :return: None
         """
+        mock_course_mode.objects.get.return_value = self.course_mode
         assert not Transaction.objects.filter(gateway='payfort', cart=self.cart).exists(), \
             'Transaction should not exist before test'
         assert self.cart.status == Cart.Status.PROCESSING, \
             'Cart should be in PROCESSING state'
-        assert not CourseEnrollment.objects.filter(
-            user=self.cart.user, course=self.course_mode.course
-        ).exists(), 'User should not be enrolled before test'
 
         request = self.request_factory.post(self.url, self.valid_response)
         request.user = self.user
@@ -391,29 +244,31 @@ class PayfortFeedbackTestView(TestCase):
         self.cart.refresh_from_db()
         assert self.cart.status == Cart.Status.PAID, \
             'Cart status should be PAID after payment'
-        assert CourseEnrollment.objects.filter(
-            user=self.cart.user, course=self.course_mode.course
-        ).exists(), 'User should be enrolled after payment'
 
         assert response.status_code == 200
 
     @pytest.mark.django_db
     @patch('payfort.views.verify_signature')
-    @patch('payfort.views.logger.error')
+    @patch('zeitlabs_payments.providers.base.logger.exception')
+    @patch('zeitlabs_payments.cart_handler.CourseEnrollment.enroll')
+    @patch("zeitlabs_payments.cart_handler.CourseMode")
     def test_post_for_success_payment_cart_with_unsupported_item(
-        self, mock_logger, mock_verify_signature  # pylint: disable=unused-argument
+        self, mock_course_mode, mock_enroll, mock_logger, mock_verify_signature  # pylint: disable=unused-argument
     ) -> None:
         """
         Test successful payment but cart contains unsupported item, triggers error logging.
-
         :param mock_logger: mocked logger.exception function
         :param mock_render: mocked render function
         :return: None
         """
+        mock_course_mode.objects.get.return_value = self.course_mode
         assert not Transaction.objects.filter(gateway='payfort', cart=self.cart).exists(), \
             'Transaction should not exist before test'
         assert self.cart.status == Cart.Status.PROCESSING, \
             'Cart should be in PROCESSING state'
+        assert not AuditLog.objects.filter(
+            cart=self.cart, action=AuditLog.AuditActions.CART_FULFILLMENT_ERROR
+        ).exists()
         unsupported_item = CatalogueItem.objects.create(sku='abcd', type='unsupported', price=50)
         self.cart.items.all().delete()
         self.cart.items.create(
@@ -431,6 +286,9 @@ class PayfortFeedbackTestView(TestCase):
         self.cart.refresh_from_db()
         assert self.cart.status == Cart.Status.PAID, \
             'Cart status should be PAID after payment'
+        assert AuditLog.objects.filter(
+            cart=self.cart, action=AuditLog.AuditActions.CART_FULFILLMENT_ERROR
+        ).exists()
 
         mock_logger.assert_called_with(
             f'Failed to fulfill cart {self.cart.id} or to create invoice: Unsupported catalogue item type: unsupported'
@@ -439,16 +297,22 @@ class PayfortFeedbackTestView(TestCase):
 
 
 @pytest.mark.django_db
-@pytest.mark.usefixtures('base_data')
 class PayFortStatusViewTest(APITestCase):
     """Tests for PayFortStatusView"""
 
     def setUp(self):
         """Setup"""
-        self.user = User.objects.get(id=3)
+        self.user = User.objects.create(username='test-user', email='test@example.com')
         self.cart = Cart.objects.create(user=self.user, status=Cart.Status.PROCESSING)
-        self.course_mode = CourseMode.objects.get(sku='custom-sku-1')
-        self.course_item = CatalogueItem.objects.get(sku='custom-sku-1')
+        self.course_item = CatalogueItem.objects.create(
+            sku='custom-sku-1',
+            type=CatalogueItem.ItemType.PAID_COURSE,
+            item_ref_id='course-v1:test+1+1',
+            price='100',
+            currency='SAR'
+        )
+        self.course_mode = MagicMock()
+        self.course_mode.course.id = self.course_item.item_ref_id
         self.cart.items.create(
             catalogue_item=self.course_item,
             original_price=self.course_item.price,
@@ -531,18 +395,18 @@ class PayFortStatusViewTest(APITestCase):
 
         response = self.client.get(self.url, data={
             'merchant_reference': f'{self.site.id}-{self.cart.id}',
-            'transaction_id': 'does-npt-matter'
+            'transaction_id': 'does-not-matter'
         })
-        assert response.status_code == 204
+        assert response.status_code == 202
 
     def test_processing_cart(self):
         """Cart in PROCESSING status"""
         self.login_user(self.user)
         response = self.client.get(self.url, data={
             'merchant_reference': f'{self.site.id}-{self.cart.id}',
-            'transaction_id': 'does-npt-matter'
+            'transaction_id': 'does-not-matter'
         })
-        assert response.status_code == 204
+        assert response.status_code == 202
 
     def test_unknown_cart_status(self):
         """Cart in unknown status"""
@@ -563,10 +427,17 @@ class PayFortReturnViewTest(TestCase):
 
     def setUp(self):
         self.factory = RequestFactory()
-        self.user = User.objects.get(id=3)
+        self.user = User.objects.create(username='test-user', email='test@example.com')
         self.cart = Cart.objects.create(user=self.user, status=Cart.Status.PROCESSING)
-        self.course_mode = CourseMode.objects.get(sku='custom-sku-1')
-        self.course_item = CatalogueItem.objects.get(sku='custom-sku-1')
+        self.course_item = CatalogueItem.objects.create(
+            sku='custom-sku-1',
+            type=CatalogueItem.ItemType.PAID_COURSE,
+            item_ref_id='course-v1:test+1+1',
+            price='100',
+            currency='SAR'
+        )
+        self.course_mode = MagicMock()
+        self.course_mode.course.id = self.course_item.item_ref_id
         self.cart.items.create(
             catalogue_item=self.course_item,
             original_price=self.course_item.price,

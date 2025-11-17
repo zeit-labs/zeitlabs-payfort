@@ -64,6 +64,7 @@ class PayFort(BaseProcessor):
             'merchant_identifier': self.merchant_identifier,
             'merchant_reference': order_reference,
             'customer_email': user_email,
+            'amount': base_params['amount'] * 100,
             'return_url': self.return_url
         }
 
@@ -83,7 +84,7 @@ class PayFort(BaseProcessor):
         self,
         cart: Cart,
         request: Optional[HttpRequest] = None,
-        use_client_side_checkout: bool = False,  # pylint: disable=unused-argument
+        use_client_side_checkout: bool = False,
         **kwargs: Any
     ) -> dict:
         """

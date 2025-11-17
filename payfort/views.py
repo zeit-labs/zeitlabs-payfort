@@ -185,7 +185,15 @@ class PayfortFeedbackView(PayFortBaseView):
             reason=data['acquirer_response_message'],
             site_id=self.site.id,
         )
-        logger.info(f'Cart is fullfilled and invoice with {invoice.invoice_numebr} has been generated successfully.')
+        if invoice:
+            logger.info(
+                f'Cart is fullfilled and invoice with {invoice.invoice_number} has been generated successfully.'
+            )
+        else:
+            logger.exception(
+                'Payment was successful but unable to update enrollment record in db,'
+                f' please check audit logs for the cart: {self.cart.id}'
+            )
         return HttpResponse(status=200)
 
 
