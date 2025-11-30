@@ -11,9 +11,10 @@ numpy                           # required by deepdiff
 pytest-cov                      # pytest extension for code coverage statistics
 pytest-django                   # pytest extension for better Django support
 types-python-dateutil           # needed for mypy to understand python-dateutil
-
+types-requests
 
 # edx-platform related requirements
+edx-opaque-keys[django]
 djangorestframework
 django-config-models
 django-filter
@@ -21,3 +22,4 @@ django-mysql
 django-simple-history
 jsonfield
 python-dateutil
+requests

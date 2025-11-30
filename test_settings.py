@@ -33,6 +33,7 @@ INSTALLED_APPS = (
     'django.contrib.messages',
     'django.contrib.sites',
     'django.contrib.sessions',
+    'zeitlabs_payments',
     'payfort',
 )
 
@@ -40,7 +41,7 @@ LOCALE_PATHS = [
     root('payfort', 'conf', 'locale'),
 ]
 
-ROOT_URLCONF = 'payfort.urls'
+ROOT_URLCONF = 'tests.test_urls'
 
 SECRET_KEY = 'insecure-secret-key'
 
@@ -76,3 +77,17 @@ PAYFORT_SETTINGS = {
 }
 
 SITE_ID = 1
+
+
+INVOICE_PREFIX = 'DEV'
+VALID_CURRENCY = 'SAR'
+ECOMMERCE_PUBLIC_URL_ROOT = 'test.ecommerce.com'
+
+PAYFORT_SETTINGS = {
+    'access_code': 'test-code',
+    'merchant_identifier': 'test-identifier',
+    'request_sha_phrase': 'test-request-phrase',
+    'response_sha_phrase': 'test-response-phrase',
+    'sha_method': 'SHA-256',
+    'redirect_url': 'https://fake_payfort.com'
+}
