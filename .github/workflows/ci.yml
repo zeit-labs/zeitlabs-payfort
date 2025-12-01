@@ -19,7 +19,7 @@ jobs:
 
     steps:
       - name: Checkout current repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Clone zeitlabs-payments
         run: |
